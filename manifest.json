@@ -1,0 +1,8 @@
+{
+  "name": "Web Export",
+  "description": "Exportiert Penpot-Boards als fertige Website (HTML, CSS und Bilder als ZIP).",
+  "code": "plugin.js",
+  "icon": "icon.png",
+  "version": 2,
+  "permissions": ["content:read", "allow:downloads"]
+}

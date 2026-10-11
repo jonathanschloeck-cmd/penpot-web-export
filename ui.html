@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Web Export</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1d1d1f; --muted: #6e6e73; --line: #e2e2e6; --card: #f5f5f7;
+    --accent: #6911d4; --accent-fg: #ffffff; --warn: #9a5b00; --err: #c4271b; --ok: #1d7f46;
+  }
+  [data-theme="dark"] {
+    --bg: #18181a; --fg: #e9e9ec; --muted: #9b9ba3; --line: #2f2f35; --card: #222227;
+    --accent: #9a6bff; --accent-fg: #ffffff; --warn: #f0b35a; --err: #ff7b6e; --ok: #5fd394;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+         font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+       color: var(--muted); margin: 0 0 8px; }
+  section { margin-bottom: 18px; }
+  .hint { color: var(--muted); margin: 0 0 8px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  #pages li { display: flex; justify-content: space-between; gap: 8px; padding: 7px 10px;
+              background: var(--card); border-radius: 6px; margin-bottom: 4px; }
+  #pages .file { color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  #pages .fixed { color: var(--warn); font-size: 11px; }
+  label.opt { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; }
+  select { margin-left: auto; background: var(--card); color: var(--fg); border: 1px solid var(--line);
+           border-radius: 5px; padding: 3px 6px; font: inherit; }
+  button.primary { width: 100%; padding: 10px; border: 0; border-radius: 8px; cursor: pointer;
+                   background: var(--accent); color: var(--accent-fg); font-family: inherit; font-size: 13px; font-weight: 600; }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  #status { min-height: 20px; margin: 10px 0 6px; }
+  #status.ok { color: var(--ok); } #status.err { color: var(--err); }
+  #warnings li { color: var(--warn); padding: 4px 0 4px 14px; position: relative; font-size: 12px; }
+  #warnings li::before { content: "!"; position: absolute; left: 0; font-weight: 700; }
+  details { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+  summary { cursor: pointer; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; }
+  td { padding: 5px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td:first-child { font-family: ui-monospace, Consolas, monospace; white-space: nowrap; color: var(--accent); }
+</style>
+</head>
+<body>
+  <section>
+    <h2>Seiten</h2>
+    <p class="hint" id="scope">Lade …</p>
+    <ul id="pages"></ul>
+  </section>
+
+  <section>
+    <h2>Optionen</h2>
+    <label class="opt"><input type="checkbox" id="googleFonts" checked> Google Fonts einbinden</label>
+    <label class="opt"><input type="checkbox" id="mobile" checked> Für Handys anpassen</label>
+    <label class="opt"><input type="checkbox" id="fluidType" checked> Große Schriften mitskalieren</label>
+    <label class="opt">Bildqualität
+      <select id="scale">
+        <option value="1">1×</option>
+        <option value="2" selected>2× (scharf)</option>
+        <option value="3">3×</option>
+      </select>
+    </label>
+  </section>
+
+  <button class="primary" id="export">Website exportieren (ZIP)</button>
+  <div id="status"></div>
+  <ul id="warnings"></ul>
+
+  <details>
+    <summary>Ebenen-Namen (Spickzettel)</summary>
+    <table>
+      <tr><td>button:/kontakt</td><td>Button-Link zur Seite „Kontakt“</td></tr>
+      <tr><td>link:https://…</td><td>Normaler Link (extern öffnet neuen Tab)</td></tr>
+      <tr><td>button:#preise</td><td>Sprung zu einem Abschnitt</td></tr>
+      <tr><td>section:preise</td><td>Abschnitt mit Sprungziel „preise“</td></tr>
+      <tr><td>header, nav, footer</td><td>Passende HTML-Bereiche</td></tr>
+      <tr><td>h1 … h6, p</td><td>Überschrift / Absatz (für Texte)</td></tr>
+      <tr><td>img:Beschreibung</td><td>Als Bild exportieren (mit Alt-Text)</td></tr>
+      <tr><td>svg</td><td>Als Vektorgrafik exportieren</td></tr>
+      <tr><td>skip</td><td>Nicht exportieren</td></tr>
+    </table>
+    <p class="hint" style="margin-top:8px">Board „Home“ oder „Start“ wird zur index.html. Flex-Layout im Board = Seite passt sich an.</p>
+  </details>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  document.documentElement.dataset.theme = params.get("theme") || "light";
+
+  const send = (msg) => parent.postMessage(msg, "*");
+
+  window.addEventListener("message", (event) => {
+    const msg = event.data;
+    if (!msg || typeof msg !== "object") return;
+    if (msg.type === "theme") document.documentElement.dataset.theme = msg.theme;
+    if (msg.type === "boards") showBoards(msg);
+    if (msg.type === "progress") setStatus(msg.text);
+    if (msg.type === "error") { setStatus(msg.message, "err"); $("export").disabled = false; }
+    if (msg.type === "result") onResult(msg);
+  });
+
+  function showBoards({ pages, fromSelection }) {
+    $("scope").textContent = pages.length === 0
+      ? "Keine Boards auf dieser Seite."
+      : fromSelection
+        ? "Ausgewählte Boards:"
+        : "Alle Boards dieser Seite (wähle Boards aus, um nur diese zu exportieren):";
+    $("pages").innerHTML = "";
+    for (const p of pages) {
+      const li = document.createElement("li");
+      const name = document.createElement("span");
+      name.textContent = p.name;
+      if (!p.responsive) {
+        const fixed = document.createElement("span");
+        fixed.className = "fixed";
+        fixed.textContent = " · feste Breite";
+        fixed.title = "Kein Flex-/Grid-Layout im Board – passt sich nicht an Handys an.";
+        name.appendChild(fixed);
+      }
+      const file = document.createElement("span");
+      file.className = "file";
+      file.textContent = p.file;
+      li.append(name, file);
+      $("pages").appendChild(li);
+    }
+    $("export").disabled = pages.length === 0;
+  }
+
+  $("export").addEventListener("click", () => {
+    $("export").disabled = true;
+    $("warnings").innerHTML = "";
+    setStatus("Starte Export …");
+    send({
+      type: "export",
+      options: {
+        googleFonts: $("googleFonts").checked,
+        mobile: $("mobile").checked,
+        fluidType: $("fluidType").checked,
+        scale: Number($("scale").value),
+      },
+    });
+  });
+
+  function onResult({ files, warnings }) {
+    try {
+      const enc = new TextEncoder();
+      const entries = files.map((f) => ({
+        path: f.path,
+        data: f.text != null ? enc.encode(f.text) : toBytes(f.data),
+      }));
+      download(makeZip(entries), "website.zip");
+      const pages = files.filter((f) => f.path.endsWith(".html")).length;
+      const assets = files.filter((f) => f.path.startsWith("assets/")).length;
+      setStatus(`Fertig: ${pages} Seite(n), ${assets} Bild(er) → website.zip`, "ok");
+    } catch (e) {
+      setStatus("ZIP konnte nicht erstellt werden: " + e.message, "err");
+    }
+    for (const w of warnings || []) {
+      const li = document.createElement("li");
+      li.textContent = w;
+      $("warnings").appendChild(li);
+    }
+    $("export").disabled = false;
+  }
+
+  function setStatus(text, kind) {
+    $("status").textContent = text;
+    $("status").className = kind || "";
+  }
+
+  // Penpot liefert Bilder als Uint8Array; je nach Übertragung kommt evtl. ein normales Objekt an.
+  function toBytes(data) {
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (Array.isArray(data)) return Uint8Array.from(data);
+    if (data && typeof data === "object") return Uint8Array.from(Object.keys(data).sort((a, b) => a - b).map((k) => data[k]));
+    if (typeof data === "string") return new TextEncoder().encode(data);
+    return new Uint8Array(0);
+  }
+
+  function download(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+
+  // --- Minimaler ZIP-Packer (ohne Kompression) ---------------------------
+  const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+
+  function crc32(bytes) {
+    let c = 0xffffffff;
+    for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  }
+
+  function makeZip(entries) {
+    const enc = new TextEncoder();
+    const now = new Date();
+    const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+    const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+    const parts = [];
+    const central = [];
+    let offset = 0;
+
+    for (const { path, data } of entries) {
+      const name = enc.encode(path);
+      const crc = crc32(data);
+
+      const local = new DataView(new ArrayBuffer(30));
+      local.setUint32(0, 0x04034b50, true);
+      local.setUint16(4, 20, true);
+      local.setUint16(6, 0x0800, true); // Dateinamen in UTF-8
+      local.setUint16(8, 0, true);      // keine Kompression
+      local.setUint16(10, dosTime, true);
+      local.setUint16(12, dosDate, true);
+      local.setUint32(14, crc, true);
+      local.setUint32(18, data.length, true);
+      local.setUint32(22, data.length, true);
+      local.setUint16(26, name.length, true);
+      local.setUint16(28, 0, true);
+      parts.push(new Uint8Array(local.buffer), name, data);
+
+      const head = new DataView(new ArrayBuffer(46));
+      head.setUint32(0, 0x02014b50, true);
+      head.setUint16(4, 20, true);
+      head.setUint16(6, 20, true);
+      head.setUint16(8, 0x0800, true);
+      head.setUint16(10, 0, true);
+      head.setUint16(12, dosTime, true);
+      head.setUint16(14, dosDate, true);
+      head.setUint32(16, crc, true);
+      head.setUint32(20, data.length, true);
+      head.setUint32(24, data.length, true);
+      head.setUint16(28, name.length, true);
+      head.setUint32(42, offset, true);
+      central.push(new Uint8Array(head.buffer), name);
+
+      offset += 30 + name.length + data.length;
+    }
+
+    const centralSize = central.reduce((sum, part) => sum + part.length, 0);
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true);
+    end.setUint16(8, entries.length, true);
+    end.setUint16(10, entries.length, true);
+    end.setUint32(12, centralSize, true);
+    end.setUint32(16, offset, true);
+    return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: "application/zip" });
+  }
+
+  send({ type: "ready" });
+</script>
+</body>
+</html>
