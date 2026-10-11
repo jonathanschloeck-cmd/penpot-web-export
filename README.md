@@ -45,9 +45,39 @@ Tipps:
 - Texte werden zu normalen Links, Rechtecke, Gruppen und Boards zu Buttons mit Hover-Effekt.
 - Führt ein Pfeil zu einem Board, das nicht mit exportiert wird, zeigt das Plugin eine Warnung.
 
+## Animationen
+
+**Seitenübergänge:** Die Animation am Prototyp-Pfeil („Navigieren zu“ → Animation) wird übernommen:
+
+| Penpot | Website |
+|---|---|
+| Überblenden (Dissolve) | Seiten blenden ineinander über |
+| Hineinschieben (Slide), rein/raus, mit Richtung | neue Seite schiebt sich herein bzw. alte heraus, auf Wunsch mit Versatz-Effekt |
+| Verdrängen (Push) | neue Seite schiebt die alte aus dem Bild |
+| Dauer und Easing | werden übernommen |
+| keine Animation | Seite wechselt sofort |
+
+Das funktioniert in Chrome, Edge und Safari (ab 18.2). Andere Browser wechseln die Seite ohne Animation. Wichtig: Übergänge laufen nur, wenn die Website über einen Server aufgerufen wird (also online oder lokal über einen Server), nicht beim Doppelklick auf die HTML-Datei.
+
+**Einblenden beim Scrollen:** Abschnitte blenden sanft von unten ein, sobald sie ins Bild kommen. Im Plugin einstellbar: alle Abschnitte (direkt im Seiten-Board, außer `header`/`nav`), nur Elemente mit `+fade` im Namen, oder aus. Wer im System „Bewegung reduzieren“ eingestellt hat, sieht alles sofort.
+
+**Hover:**
+- Buttons werden beim Darüberfahren leicht heller und heben sich um 2 px an.
+- Text-Links blenden sanft zu Schwarz über, auf dunklem Hintergrund zu Weiß.
+- `+dark` im Namen macht das für beliebige Texte oder Bereiche (bei Bereichen werden alle Texte darin abgedunkelt).
+
 ## Ebenen-Namen
 
 Links gehen alternativ auch über den Namen der Ebene. Ein Name hat Vorrang vor dem Prototyp.
+
+Zusätze mit `+` dürfen überall im Namen stehen, z. B. `Teamfoto +fade` oder `section:preise +nofade`:
+
+| Zusatz | Wirkung |
+|---|---|
+| `+fade` | Element beim Scrollen einblenden |
+| `+nofade` | Abschnitt nicht einblenden |
+| `+dark` | Schrift beim Hover schwarz (bzw. weiß auf dunklem Grund) |
+
 
 | Name der Ebene | Ergebnis |
 |---|---|

@@ -63,6 +63,20 @@
     </label>
   </section>
 
+  <section>
+    <h2>Animationen</h2>
+    <label class="opt"><input type="checkbox" id="transitions" checked> Seitenübergänge aus dem Prototyp</label>
+    <label class="opt"><input type="checkbox" id="hoverButtons" checked> Buttons heben sich beim Hover</label>
+    <label class="opt"><input type="checkbox" id="darkenLinks" checked> Text-Links beim Hover abdunkeln</label>
+    <label class="opt">Beim Scrollen einblenden
+      <select id="fade">
+        <option value="sections" selected>Alle Abschnitte</option>
+        <option value="marked">Nur mit +fade</option>
+        <option value="off">Aus</option>
+      </select>
+    </label>
+  </section>
+
   <button class="primary" id="export">Website exportieren (ZIP)</button>
   <div id="status"></div>
   <ul id="warnings"></ul>
@@ -79,6 +93,9 @@
       <tr><td>img:Beschreibung</td><td>Als Bild exportieren (mit Alt-Text)</td></tr>
       <tr><td>svg</td><td>Als Vektorgrafik exportieren</td></tr>
       <tr><td>skip</td><td>Nicht exportieren</td></tr>
+      <tr><td>… +fade</td><td>Element beim Scrollen einblenden (z. B. „Bild +fade“)</td></tr>
+      <tr><td>… +nofade</td><td>Abschnitt nicht einblenden</td></tr>
+      <tr><td>… +dark</td><td>Schrift wird beim Hover schwarz (auf dunklem Grund weiß)</td></tr>
     </table>
     <p class="hint" style="margin-top:8px">Links gehen auch ohne Namen: im Prototyp-Modus „Bei Klick → Navigieren zu“ bzw. „URL öffnen“ setzen. Das Start-Board des Flows wird zur index.html. Flex-Layout im Board = Seite passt sich an.</p>
   </details>
@@ -138,6 +155,10 @@
         mobile: $("mobile").checked,
         fluidType: $("fluidType").checked,
         scale: Number($("scale").value),
+        transitions: $("transitions").checked,
+        hoverButtons: $("hoverButtons").checked,
+        darkenLinks: $("darkenLinks").checked,
+        fade: $("fade").value,
       },
     });
   });

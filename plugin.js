@@ -26,7 +26,7 @@ const FLEX_JUSTIFY = {
 // ---------------------------------------------------------------------------
 // Verbindung zur Oberfläche
 
-penpot.ui.open("Web Export", `ui.html?theme=${penpot.theme}`, { width: 360, height: 660 });
+penpot.ui.open("Web Export", `ui.html?theme=${penpot.theme}`, { width: 360, height: 760 });
 
 penpot.ui.onMessage((msg) => {
   if (!msg || typeof msg !== "object") return;
@@ -61,6 +61,10 @@ async function runExport(options) {
     mobile: options.mobile !== false,
     fluidType: options.fluidType !== false,
     scale: Number(options.scale) || 2,
+    transitions: options.transitions !== false,
+    fade: ["sections", "marked", "off"].includes(options.fade) ? options.fade : "sections",
+    hoverButtons: options.hoverButtons !== false,
+    darkenLinks: options.darkenLinks !== false,
   };
   try {
     const { boards } = targetBoards();
@@ -77,6 +81,7 @@ async function runExport(options) {
       ctx.files.push({ path: page.file, text: htmlDocument(page, bodies[i], ctx) });
     });
     ctx.files.push({ path: "style.css", text: buildCss(ctx) });
+    if (needsScript(ctx)) ctx.files.push({ path: "site.js", text: SITE_JS });
 
     penpot.ui.sendMessage({ type: "result", files: ctx.files, warnings: ctx.warnings });
   } catch (e) {
@@ -163,6 +168,8 @@ function createContext(boards, opts) {
     usesMobileStack: false,
     usesMobileGrid: false,
     usesMobilePad: false,
+    usesFade: false,
+    transitions: new Set(),
   };
   ctx.warn = (text) => {
     if (!ctx.warnings.includes(text)) ctx.warnings.push(text);
@@ -173,8 +180,19 @@ function createContext(boards, opts) {
 // ---------------------------------------------------------------------------
 // Ebenen-Namen auswerten
 
+// Zusätze wie "+fade" oder "+dark" dürfen überall im Namen stehen ("Bild +fade").
 function parseName(name) {
-  const raw = String(name || "").trim();
+  const mods = new Set();
+  const raw = String(name || "")
+    .replace(/(^|\s)\+([a-z][a-z-]*)/gi, (_, space, mod) => {
+      mods.add(mod.toLowerCase());
+      return space;
+    })
+    .trim();
+  return Object.assign(parseBaseName(raw), { mods });
+}
+
+function parseBaseName(raw) {
   const m = raw.match(/^([a-zA-Z][\w-]*)\s*(?::\s*(.*))?$/);
   if (!m) return { kind: null };
   const key = m[1].toLowerCase();
@@ -236,12 +254,12 @@ async function renderPage(page, ctx) {
 
   const tag = meta.kind === "tag" ? meta.tag : "main";
   let inner = "";
-  for (const child of orderedChildren(board)) inner += await renderNode(child, board, ctx, 2);
+  for (const child of orderedChildren(board)) inner += await renderNode(child, board, ctx, 2, false, true);
   page.background = firstSolidFill(board);
   return `  <${tag} class="${classes.join(" ")}">\n${inner}  </${tag}>\n`;
 }
 
-async function renderNode(shape, parent, ctx, depth, inLink) {
+async function renderNode(shape, parent, ctx, depth, inLink, topLevel) {
   if (!shape || shape.hidden) return "";
   const meta = parseName(shape.name);
   if (meta.kind === "skip") return "";
@@ -259,8 +277,22 @@ async function renderNode(shape, parent, ctx, depth, inLink) {
     attrs += ` href="${escAttr(link.href)}"`;
     if (/^https?:/i.test(link.href)) attrs += ` target="_blank" rel="noopener"`;
     classes.push(link.button ? "btn" : "lnk");
+    const t = link.transition;
+    if (t) attrs += ` data-transition="${t.name}" data-duration="${t.duration}" data-easing="${t.easing}"`;
   }
   if (meta.id) attrs += ` id="${escAttr(slugify(meta.id))}"`;
+
+  if (wantsFade(shape, meta, ctx, topLevel)) {
+    classes.push("wx-fade");
+    ctx.usesFade = true;
+  }
+  // "Abdunkeln" beim Hover: Text-Links automatisch, alles andere mit "+dark" im Namen
+  if ((link && !link.button && shape.type === "text" && ctx.opts.darkenLinks) || meta.mods.has("dark")) {
+    const target = hoverColor(shape.type === "text" ? shape.parent : shape);
+    // Button-Übergänge mit aufführen, sonst würden sie hier überschrieben
+    ctx.css.push(rule(`.${cls}, .${cls} *`, ["transition:color 0.3s ease, filter 0.2s ease, translate 0.2s ease"]));
+    ctx.css.push(rule(`.${cls}:hover, .${cls}:hover *`, [`color:${target}`]));
+  }
 
   // Vektoren, Bilder und alles mit "img"/"svg" im Namen wird als Datei exportiert.
   const exportKind = decideExport(shape, meta);
@@ -321,7 +353,7 @@ function linkFor(shape, meta, ctx, inLink) {
   if (action.type === "navigate-to") {
     const dest = action.destination;
     const page = dest && ctx.pages.find((p) => p.board.id === dest.id);
-    if (page) return { href: page.file, button };
+    if (page) return { href: page.file, button, transition: transitionFor(action.animation, ctx) };
     ctx.warn(`„${shape.name}“ führt zum Board „${dest ? dest.name : "?"}“, das nicht mit exportiert wird.`);
     return { href: dest ? `${slugify(dest.name) || "seite"}.html` : "#", button };
   }
@@ -333,6 +365,50 @@ function linkFor(shape, meta, ctx, inLink) {
 
   ctx.warn(`„${shape.name}“: Overlays aus dem Prototyp werden noch nicht unterstützt.`);
   return null;
+}
+
+// Penpot-Animation (dissolve / slide / push) -> Name für den Seitenübergang
+function transitionFor(animation, ctx) {
+  if (!animation || !ctx.opts.transitions) return null;
+  const dir = animation.direction;
+  let name;
+  if (animation.type === "dissolve") name = "dissolve";
+  else if (!["left", "right", "up", "down"].includes(dir)) return null;
+  else if (animation.type === "push") name = `push-${dir}`;
+  else if (animation.type === "slide") {
+    name = `slide-${animation.way === "out" ? "out" : "in"}-${dir}${animation.offsetEffect ? "-offset" : ""}`;
+  } else return null;
+
+  let duration = num(animation.duration) || 300;
+  if (duration <= 10) duration *= 1000; // falls Sekunden statt Millisekunden
+  const easing = ["linear", "ease", "ease-in", "ease-out", "ease-in-out"].includes(animation.easing) ? animation.easing : "linear";
+  ctx.transitions.add(name);
+  return { name, duration: Math.round(duration), easing };
+}
+
+function wantsFade(shape, meta, ctx, topLevel) {
+  if (ctx.opts.fade === "off" || meta.mods.has("nofade")) return false;
+  // Eigene Deckkraft würde vom Einblenden überschrieben
+  if (typeof shape.opacity === "number" && shape.opacity < 1) return false;
+  if (meta.mods.has("fade")) return true;
+  const isHeader = meta.kind === "tag" && (meta.tag === "header" || meta.tag === "nav");
+  return ctx.opts.fade === "sections" && Boolean(topLevel) && !isHeader;
+}
+
+// Schwarz auf hellem, Weiß auf dunklem Hintergrund
+function hoverColor(start) {
+  for (let cur = start; cur; cur = cur.parent) {
+    const fill = asArray(cur.fills).find((f) => f && f.fillColor && !f.fillImage && (f.fillOpacity == null || f.fillOpacity >= 0.5));
+    if (fill) return luminance(fill.fillColor) < 0.5 ? "#ffffff" : "#000000";
+  }
+  return "#000000";
+}
+
+function luminance(hex) {
+  let h = String(hex).replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = parseInt(h.slice(0, 6), 16);
+  return (0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) / 255;
 }
 
 function clickAction(shape) {
@@ -749,7 +825,7 @@ function htmlDocument(page, body, ctx) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeText(page.title)}</title>
 ${fonts}  <link rel="stylesheet" href="style.css">
-</head>
+${needsScript(ctx) ? '  <script src="site.js"></script>\n' : ""}</head>
 <body${bodyStyle}>
 ${body}</body>
 </html>
@@ -782,16 +858,15 @@ body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; 
 h1, h2, h3, h4, h5, h6, p, blockquote, label { margin: 0; font: inherit; }
 img { display: block; max-width: 100%; }
 a { color: inherit; }
-.lnk { text-decoration: none; }
-.lnk:hover { opacity: 0.8; }
-.btn { text-decoration: none; cursor: pointer; transition: filter 0.15s ease, transform 0.15s ease; }
-.btn:hover { filter: brightness(1.08); }
-.btn:active { transform: translateY(1px); }
-.btn > img, .lnk > img { width: 100%; height: 100%; }
+.lnk { text-decoration: none; transition: opacity 0.2s ease; }
+${ctx.opts.darkenLinks ? "" : ".lnk:hover { opacity: 0.75; }\n"}.btn { text-decoration: none; cursor: pointer; transition: filter 0.2s ease, translate 0.2s ease; }
+${ctx.opts.hoverButtons ? ".btn:hover { filter: brightness(1.08); translate: 0 -2px; }\n.btn:active { translate: 0 0; filter: brightness(0.96); }\n" : ""}.btn > img, .lnk > img { width: 100%; height: 100%; }
 .txt-in { display: block; }
 
 `;
   css += ctx.css.join("\n");
+  css += fadeCss(ctx);
+  css += transitionCss(ctx);
 
   const mobile = [];
   if (ctx.usesMobileStack) {
@@ -810,6 +885,127 @@ a { color: inherit; }
   if (mobile.length) css += `\n\n/* Handy */\n@media (max-width: ${MOBILE_BREAKPOINT}px) {\n${mobile.join("\n")}\n}\n`;
   return css;
 }
+
+function fadeCss(ctx) {
+  if (!ctx.usesFade) return "";
+  // Nur mit JavaScript ausblenden – ohne JS bleibt alles sichtbar.
+  return `
+/* Einblenden beim Scrollen */
+.wx-js .wx-fade { opacity: 0; translate: 0 24px; transition: opacity 0.7s ease, translate 0.7s ease; }
+.wx-js .wx-fade.wx-in { opacity: 1; translate: 0 0; }
+@media (prefers-reduced-motion: reduce) {
+  .wx-js .wx-fade { opacity: 1; translate: 0 0; transition: none; }
+}
+`;
+}
+
+// Seitenübergänge (View Transitions zwischen zwei HTML-Seiten).
+// site.js setzt beim Laden der neuen Seite den Typ, z. B. "slide-in-left".
+function transitionCss(ctx) {
+  if (!ctx.transitions.size) return "";
+  // Startversatz der neuen Seite: Bewegung nach links = kommt von rechts
+  const OFFSET = { left: [1, 0], right: [-1, 0], up: [0, 1], down: [0, -1] };
+  const anim = (name) => `${name} var(--wx-duration, 300ms) var(--wx-easing, linear) both`;
+  let css = `
+/* Seitenübergänge */
+@view-transition { navigation: auto; }
+::view-transition-old(root), ::view-transition-new(root) {
+  animation-duration: var(--wx-duration, 300ms);
+  animation-timing-function: var(--wx-easing, linear);
+}
+`;
+  const dirs = new Set();
+  for (const name of ctx.transitions) {
+    const m = name.match(/^(slide-in|slide-out|push)-(left|right|up|down)(-offset)?$/);
+    if (!m) continue; // "dissolve" = normales Überblenden
+    const [, kind, dir, offset] = m;
+    dirs.add(dir);
+    const old = `html:active-view-transition-type(${name})::view-transition-old(root)`;
+    const neu = `html:active-view-transition-type(${name})::view-transition-new(root)`;
+    let oldAnim = anim(`wx-exit-${dir}`);
+    let newAnim = anim(`wx-enter-${dir}`);
+    let oldExtra = "";
+    if (kind === "slide-in") oldAnim = offset ? anim(`wx-exit-${dir}-offset`) : "none";
+    if (kind === "slide-out") {
+      newAnim = offset ? anim(`wx-enter-${dir}-offset`) : "none";
+      oldExtra = " z-index: 1;";
+    }
+    css += `${old} { animation: ${oldAnim}; mix-blend-mode: normal;${oldExtra} }\n`;
+    css += `${neu} { animation: ${newAnim}; mix-blend-mode: normal; }\n`;
+  }
+  for (const dir of dirs) {
+    const [x, y] = OFFSET[dir];
+    const t = (f) => `${x * f}% ${y * f}%`;
+    css += `@keyframes wx-enter-${dir} { from { translate: ${t(100)}; } }\n`;
+    css += `@keyframes wx-exit-${dir} { to { translate: ${t(-100)}; } }\n`;
+    css += `@keyframes wx-enter-${dir}-offset { from { translate: ${t(30)}; } }\n`;
+    css += `@keyframes wx-exit-${dir}-offset { to { translate: ${t(-30)}; } }\n`;
+  }
+  return css;
+}
+
+function needsScript(ctx) {
+  return ctx.usesFade || ctx.transitions.size > 0;
+}
+
+// Wird als site.js mit exportiert. Bewusst ohne moderne Syntax, damit es überall läuft.
+const SITE_JS = `/* Erzeugt mit dem Penpot-Plugin „Web Export“ */
+(function () {
+  var KEY = "wx-transition";
+  var root = document.documentElement;
+  root.classList.add("wx-js");
+
+  // Seitenübergänge: Animation des geklickten Links für die nächste Seite merken
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest("a[href]");
+    if (!a) return;
+    try {
+      if (a.dataset.transition) {
+        sessionStorage.setItem(KEY, JSON.stringify({
+          type: a.dataset.transition, duration: a.dataset.duration, easing: a.dataset.easing
+        }));
+      } else {
+        sessionStorage.removeItem(KEY);
+      }
+    } catch (err) {}
+  });
+
+  window.addEventListener("pagereveal", function (e) {
+    if (!e.viewTransition) return;
+    var t = null;
+    try {
+      t = JSON.parse(sessionStorage.getItem(KEY) || "null");
+      sessionStorage.removeItem(KEY);
+    } catch (err) {}
+    if (!t) { e.viewTransition.skipTransition(); return; }
+    root.style.setProperty("--wx-duration", (Number(t.duration) || 300) + "ms");
+    root.style.setProperty("--wx-easing", t.easing || "linear");
+    if (t.type !== "dissolve") e.viewTransition.types.add(t.type);
+  });
+
+  // Einblenden beim Scrollen
+  document.addEventListener("DOMContentLoaded", function () {
+    var items = document.querySelectorAll(".wx-fade");
+    if (!items.length) return;
+    if (!("IntersectionObserver" in window)) {
+      items.forEach(function (el) { el.classList.add("wx-in"); });
+      return;
+    }
+    var io = new IntersectionObserver(function (entries) {
+      var n = 0;
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        var el = entry.target;
+        el.style.transitionDelay = (n++ * 90) + "ms";
+        el.classList.add("wx-in");
+        io.unobserve(el);
+        setTimeout(function () { el.style.transitionDelay = ""; }, 1200);
+      });
+    }, { rootMargin: "0px 0px -8% 0px", threshold: 0.1 });
+    items.forEach(function (el) { io.observe(el); });
+  });
+})();
+`;
 
 function rule(selector, decls) {
   if (!decls.length) return `${selector} {}\n`;
