@@ -93,7 +93,7 @@ function errorText(e) {
 
 function isTopLevel(shape) {
   const parent = shape.parent;
-  return !parent || parent.id === ROOT_ID;
+  return !parent || parent.id === ROOT_ID || !parent.parent;
 }
 
 function topBoardOf(shape) {
@@ -123,7 +123,7 @@ function targetBoards() {
 }
 
 function planPages(boards) {
-  const indexBoard = boards.find((b) => INDEX_NAMES.includes(slugify(b.name))) || boards[0];
+  const indexBoard = flowStartBoard(boards) || boards.find((b) => INDEX_NAMES.includes(slugify(b.name))) || boards[0];
   const used = new Set();
   return boards.map((board) => {
     const base = board === indexBoard ? "index" : slugify(board.name) || "seite";
@@ -132,6 +132,21 @@ function planPages(boards) {
     used.add(slug);
     return { board, slug, nameSlug: slugify(board.name), file: `${slug}.html`, title: board.name };
   });
+}
+
+// Das Start-Board des ersten Prototyp-Flows wird zur index.html.
+function flowStartBoard(boards) {
+  try {
+    const flows = (penpot.currentPage && penpot.currentPage.flows) || [];
+    for (const flow of flows) {
+      const start = flow.startingBoard;
+      const match = start && boards.find((b) => b.id === start.id);
+      if (match) return match;
+    }
+  } catch (e) {
+    // Flows nicht verfügbar – dann entscheidet der Name.
+  }
+  return null;
 }
 
 function createContext(boards, opts) {
@@ -179,6 +194,7 @@ function resolveHref(target, ctx) {
   if (!t || t === "#") return "#";
   if (/^(https?:|mailto:|tel:|#)/i.test(t)) return t;
   if (/^www\./i.test(t)) return `https://${t}`;
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}(\/.*)?$/i.test(t) && !/\.html?$/i.test(t)) return `https://${t}`;
   if (/^[^/\s]+@[^/\s]+\.[a-z]{2,}$/i.test(t)) return `mailto:${t}`;
 
   const [rawPath, hash] = t.split("#");
@@ -225,7 +241,7 @@ async function renderPage(page, ctx) {
   return `  <${tag} class="${classes.join(" ")}">\n${inner}  </${tag}>\n`;
 }
 
-async function renderNode(shape, parent, ctx, depth) {
+async function renderNode(shape, parent, ctx, depth, inLink) {
   if (!shape || shape.hidden) return "";
   const meta = parseName(shape.name);
   if (meta.kind === "skip") return "";
@@ -236,12 +252,13 @@ async function renderNode(shape, parent, ctx, depth) {
   const decls = [];
   let attrs = "";
 
-  const isLink = meta.kind === "button" || meta.kind === "link";
-  if (isLink) {
-    const href = resolveHref(meta.href, ctx);
-    attrs += ` href="${escAttr(href)}"`;
-    if (/^https?:/i.test(href)) attrs += ` target="_blank" rel="noopener"`;
-    classes.push(meta.kind === "button" ? "btn" : "lnk");
+  // Links im Link sind in HTML nicht erlaubt – der äußere gewinnt.
+  const link = linkFor(shape, meta, ctx, inLink);
+  const isLink = Boolean(link);
+  if (link) {
+    attrs += ` href="${escAttr(link.href)}"`;
+    if (/^https?:/i.test(link.href)) attrs += ` target="_blank" rel="noopener"`;
+    classes.push(link.button ? "btn" : "lnk");
   }
   if (meta.id) attrs += ` id="${escAttr(slugify(meta.id))}"`;
 
@@ -283,8 +300,50 @@ async function renderNode(shape, parent, ctx, depth) {
   const kids = orderedChildren(shape);
   if (!kids.length) return `${pad}<${tag} class="${classes.join(" ")}"${attrs}></${tag}>\n`;
   let inner = "";
-  for (const child of kids) inner += await renderNode(child, shape, ctx, depth + 1);
+  for (const child of kids) inner += await renderNode(child, shape, ctx, depth + 1, inLink || isLink);
   return `${pad}<${tag} class="${classes.join(" ")}"${attrs}>\n${inner}${pad}</${tag}>\n`;
+}
+
+// Link aus dem Ebenen-Namen (button:/link:) oder aus dem Prototyp ("Bei Klick → …").
+function linkFor(shape, meta, ctx, inLink) {
+  const named = meta.kind === "button" || meta.kind === "link";
+  const action = named ? null : clickAction(shape);
+  if (!named && !action) return null;
+  if (inLink) {
+    ctx.warn(`„${shape.name}“ liegt in einem anderen Link und wird deshalb nicht selbst verlinkt.`);
+    return null;
+  }
+
+  if (named) return { href: resolveHref(meta.href, ctx), button: meta.kind === "button" };
+
+  // Prototyp-Klicks: Texte werden normale Links, alles andere bekommt den Button-Hover.
+  const button = shape.type !== "text";
+  if (action.type === "navigate-to") {
+    const dest = action.destination;
+    const page = dest && ctx.pages.find((p) => p.board.id === dest.id);
+    if (page) return { href: page.file, button };
+    ctx.warn(`„${shape.name}“ führt zum Board „${dest ? dest.name : "?"}“, das nicht mit exportiert wird.`);
+    return { href: dest ? `${slugify(dest.name) || "seite"}.html` : "#", button };
+  }
+  if (action.type === "open-url") {
+    const url = String(action.url || "").trim();
+    return { href: !url ? "#" : /^[a-z]+:/i.test(url) ? url : resolveHref(url, ctx), button };
+  }
+  if (action.type === "previous-screen") return { href: "javascript:history.back()", button };
+
+  ctx.warn(`„${shape.name}“: Overlays aus dem Prototyp werden noch nicht unterstützt.`);
+  return null;
+}
+
+function clickAction(shape) {
+  let interactions;
+  try {
+    interactions = shape.interactions;
+  } catch (e) {
+    return null;
+  }
+  const hit = asArray(interactions).find((i) => i && i.trigger === "click" && i.action);
+  return hit ? hit.action : null;
 }
 
 function decideExport(shape, meta) {
